@@ -1,21 +1,61 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
-  const VERIFY_ENDPOINT =
-    'https://natfanclub-backend-809989871890.asia-southeast1.run.app/verify';
-  const CACHE_STORAGE_KEY = 'verify-cache-v1';
+  const CRAWL_ENDPOINT =
+    'https://natfanclub-backend-809989871890.asia-southeast1.run.app/crawl';
+  const VERIFY_CONTENT_ENDPOINT =
+    'https://natfanclub-backend-809989871890.asia-southeast1.run.app/verify_content';
+  const CACHE_STORAGE_KEY = 'verify-cache-v2';
 
   type CachedVerifyEntry = {
     Summary: string;
+    Verdict: string;
+    VerdictReasoning: string;
+    SupportingSourceCount: number;
+    ContradictingSourceCount: number;
+    SampleSupportingSources: VerifySourceItem[];
+    SampleContradictingSources: VerifySourceItem[];
+    ReliableSourceName: string;
+    ReliableSourceUrl: string;
+    Agreements: string[];
+    Differences: string[];
+    Analysis: string;
+    MissingContext: string[];
+    PotentialRisks: string[];
     fetchedAt: string;
   };
 
+  type VerifySourceItem = {
+    Name: string;
+    URL: string;
+    Note: string;
+  };
+
+  type RichTextSegment =
+    | { type: 'text'; text: string }
+    | { type: 'link'; text: string; href: string };
+
+  const languageOptions = ['English', 'Malay', 'Tamil', 'Korean', 'Chinese'] as const;
+
   let currentUrl = '';
   let summary = '';
+  let verdict = '';
+  let verdictReasoning = '';
+  let supportingSourceCount = 0;
+  let contradictingSourceCount = 0;
+  let sampleSupportingSources: VerifySourceItem[] = [];
+  let sampleContradictingSources: VerifySourceItem[] = [];
+  let reliableSource = { Name: '', URL: '' };
+  let agreements: string[] = [];
+  let differences: string[] = [];
+  let comparisonAnalysis = '';
+  let missingContext: string[] = [];
+  let potentialRisks: string[] = [];
   let error = '';
   let isLoading = false;
   let hasFetched = false;
   let summarySource: 'network' | 'cache' | '' = '';
+  let selectedLanguage: (typeof languageOptions)[number] = 'English';
 
   const summaryFallback =
     'Website brief description and summary will appear here once verification finishes.';
@@ -35,22 +75,260 @@
     return typeof candidate === 'string' ? candidate : '';
   };
 
-  const getCachedVerifyEntry = async (url: string) => {
+  const extractCrawledContent = (payload: unknown) => {
+    if (!payload || typeof payload !== 'object') {
+      return { title: '', body: '', comments: '' };
+    }
+
+    const record = payload as {
+      Title?: unknown;
+      'Body Text'?: unknown;
+      Comments?: unknown;
+      contents?: {
+        Title?: unknown;
+        'Body Text'?: unknown;
+        Comments?: unknown;
+      };
+    };
+
+    const source = record.contents ?? record;
+
+    return {
+      title: typeof source.Title === 'string' ? source.Title : '',
+      body: typeof source['Body Text'] === 'string' ? source['Body Text'] : '',
+      comments: typeof source.Comments === 'string' ? source.Comments : '',
+    };
+  };
+
+  const emptyVerifyDetails = () => ({
+    verdict: '',
+    verdictReasoning: '',
+    supportingSourceCount: 0,
+    contradictingSourceCount: 0,
+    sampleSupportingSources: [] as VerifySourceItem[],
+    sampleContradictingSources: [] as VerifySourceItem[],
+    reliableSource: { Name: '', URL: '' },
+    agreements: [] as string[],
+    differences: [] as string[],
+    analysis: '',
+    missingContext: [] as string[],
+    potentialRisks: [] as string[],
+  });
+
+  const extractSourceItems = (value: unknown): VerifySourceItem[] => {
+    if (!Array.isArray(value)) return [];
+
+    return value.flatMap((item) => {
+      if (!item || typeof item !== 'object') return [];
+      const record = item as { Name?: unknown; URL?: unknown; Note?: unknown };
+
+      return [
+        {
+          Name: typeof record.Name === 'string' ? record.Name : '',
+          URL: typeof record.URL === 'string' ? record.URL : '',
+          Note: typeof record.Note === 'string' ? record.Note : '',
+        },
+      ];
+    });
+  };
+
+  const extractStringList = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    return value.filter((item): item is string => typeof item === 'string');
+  };
+
+  const parseTextWithBareUrls = (text: string): RichTextSegment[] => {
+    if (!text) return [];
+
+    const segments: RichTextSegment[] = [];
+    const urlRegex = /https?:\/\/[^\s)]+/g;
+    let lastIndex = 0;
+
+    for (const match of text.matchAll(urlRegex)) {
+      const matchText = match[0];
+      const start = match.index ?? 0;
+
+      if (start > lastIndex) {
+        segments.push({ type: 'text', text: text.slice(lastIndex, start) });
+      }
+
+      const href = matchText.replace(/[.,;:!?]+$/, '');
+      segments.push({
+        type: 'link',
+        text: href,
+        href,
+      });
+
+      lastIndex = start + matchText.length;
+    }
+
+    if (lastIndex < text.length) {
+      segments.push({ type: 'text', text: text.slice(lastIndex) });
+    }
+
+    return segments;
+  };
+
+  const parseRichTextSegments = (text: string): RichTextSegment[] => {
+    if (!text) return [];
+
+    const segments: RichTextSegment[] = [];
+    const markdownLinkRegex = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+    let lastIndex = 0;
+
+    for (const match of text.matchAll(markdownLinkRegex)) {
+      const matchText = match[0];
+      const start = match.index ?? 0;
+
+      if (start > lastIndex) {
+        segments.push(...parseTextWithBareUrls(text.slice(lastIndex, start)));
+      }
+
+      const markdownLabel = match[1];
+      const markdownUrl = match[2];
+
+      if (markdownLabel && markdownUrl) {
+        segments.push({
+          type: 'link',
+          text: markdownLabel,
+          href: markdownUrl,
+        });
+      }
+
+      lastIndex = start + matchText.length;
+    }
+
+    if (lastIndex < text.length) {
+      segments.push(...parseTextWithBareUrls(text.slice(lastIndex)));
+    }
+
+    return segments;
+  };
+
+  const renderableTextFields = (text: string) => parseRichTextSegments(text);
+
+  const extractVerifyDetails = (payload: unknown) => {
+    if (!payload || typeof payload !== 'object') {
+      return emptyVerifyDetails();
+    }
+
+    const record = payload as {
+      CredibilityAssessment?: {
+        Verdict?: unknown;
+        VerdictReasoning?: unknown;
+        SupportingSourceCount?: unknown;
+        ContradictingSourceCount?: unknown;
+        SampleSupportingSources?: unknown;
+        SampleContradictingSources?: unknown;
+      };
+      DeepComparison?: {
+        ReliableSource?: { Name?: unknown; URL?: unknown };
+        Agreements?: unknown;
+        Differences?: unknown;
+        Analysis?: unknown;
+      };
+      ContextualFlags?: {
+        MissingContext?: unknown;
+        PotentialRisks?: unknown;
+      };
+    };
+
+    return {
+      verdict:
+        typeof record.CredibilityAssessment?.Verdict === 'string'
+          ? record.CredibilityAssessment.Verdict
+          : '',
+      verdictReasoning:
+        typeof record.CredibilityAssessment?.VerdictReasoning === 'string'
+          ? record.CredibilityAssessment.VerdictReasoning
+          : '',
+      supportingSourceCount:
+        typeof record.CredibilityAssessment?.SupportingSourceCount === 'number'
+          ? record.CredibilityAssessment.SupportingSourceCount
+          : 0,
+      contradictingSourceCount:
+        typeof record.CredibilityAssessment?.ContradictingSourceCount === 'number'
+          ? record.CredibilityAssessment.ContradictingSourceCount
+          : 0,
+      sampleSupportingSources: extractSourceItems(
+        record.CredibilityAssessment?.SampleSupportingSources,
+      ),
+      sampleContradictingSources: extractSourceItems(
+        record.CredibilityAssessment?.SampleContradictingSources,
+      ),
+      reliableSource: {
+        Name:
+          typeof record.DeepComparison?.ReliableSource?.Name === 'string'
+            ? record.DeepComparison.ReliableSource.Name
+            : '',
+        URL:
+          typeof record.DeepComparison?.ReliableSource?.URL === 'string'
+            ? record.DeepComparison.ReliableSource.URL
+            : '',
+      },
+      agreements: extractStringList(record.DeepComparison?.Agreements),
+      differences: extractStringList(record.DeepComparison?.Differences),
+      analysis:
+        typeof record.DeepComparison?.Analysis === 'string' ? record.DeepComparison.Analysis : '',
+      missingContext: extractStringList(record.ContextualFlags?.MissingContext),
+      potentialRisks: extractStringList(record.ContextualFlags?.PotentialRisks),
+    };
+  };
+
+  const getVerificationStatus = (currentVerdict: string) => {
+    if (isLoading) return 'Verifying...';
+
+    if (currentVerdict === 'Likely accurate') {
+      return 'Verified!';
+    }
+
+    if (currentVerdict === 'Unverified') {
+      return 'Unverified';
+    }
+
+    if (currentVerdict === 'Potentially misleading') {
+      return 'Misleading';
+    }
+
+    return hasFetched ? 'Unverified' : 'Waiting';
+  };
+
+  const getVerificationTone = (currentVerdict: string) => {
+    if (isLoading) return 'pending';
+
+    if (currentVerdict === 'Likely accurate') {
+      return 'verified';
+    }
+
+    if (currentVerdict === 'Unverified') {
+      return 'unverified';
+    }
+
+    if (currentVerdict === 'Potentially misleading') {
+      return 'misleading';
+    }
+
+    return hasFetched ? 'unverified' : 'idle';
+  };
+
+  const getCacheKey = (url: string, language: string) => `${url}::${language}`;
+
+  const getCachedVerifyEntry = async (cacheKey: string) => {
     const stored = (await browser.storage.local.get(CACHE_STORAGE_KEY)) as {
       [CACHE_STORAGE_KEY]?: Record<string, CachedVerifyEntry>;
     };
 
-    return stored[CACHE_STORAGE_KEY]?.[url] ?? null;
+    return stored[CACHE_STORAGE_KEY]?.[cacheKey] ?? null;
   };
 
-  const setCachedVerifyEntry = async (url: string, entry: CachedVerifyEntry) => {
+  const setCachedVerifyEntry = async (cacheKey: string, entry: CachedVerifyEntry) => {
     const stored = (await browser.storage.local.get(CACHE_STORAGE_KEY)) as {
       [CACHE_STORAGE_KEY]?: Record<string, CachedVerifyEntry>;
     };
 
     const nextCache = {
       ...(stored[CACHE_STORAGE_KEY] ?? {}),
-      [url]: entry,
+      [cacheKey]: entry,
     };
 
     await browser.storage.local.set({
@@ -74,40 +352,114 @@
   async function loadSummary() {
     if (!currentUrl) return;
 
+    const cacheKey = getCacheKey(currentUrl, selectedLanguage);
     isLoading = true;
     hasFetched = true;
     error = '';
 
     try {
-      const cachedEntry = await getCachedVerifyEntry(currentUrl);
+      const cachedEntry = await getCachedVerifyEntry(cacheKey);
       if (cachedEntry) {
         summary = cachedEntry.Summary;
+        verdict = cachedEntry.Verdict;
+        verdictReasoning = cachedEntry.VerdictReasoning;
+        supportingSourceCount = cachedEntry.SupportingSourceCount;
+        contradictingSourceCount = cachedEntry.ContradictingSourceCount;
+        sampleSupportingSources = cachedEntry.SampleSupportingSources;
+        sampleContradictingSources = cachedEntry.SampleContradictingSources;
+        reliableSource = {
+          Name: cachedEntry.ReliableSourceName,
+          URL: cachedEntry.ReliableSourceUrl,
+        };
+        agreements = cachedEntry.Agreements;
+        differences = cachedEntry.Differences;
+        comparisonAnalysis = cachedEntry.Analysis;
+        missingContext = cachedEntry.MissingContext;
+        potentialRisks = cachedEntry.PotentialRisks;
         summarySource = 'cache';
         return;
       }
 
-      const response = await fetch(VERIFY_ENDPOINT, {
+      const crawlResponse = await fetch(CRAWL_ENDPOINT, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ url: currentUrl }),
+        body: JSON.stringify({ url: currentUrl, language: selectedLanguage }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Verify request failed: ${response.status}`);
+      if (!crawlResponse.ok) {
+        throw new Error(`Crawl request failed: ${crawlResponse.status}`);
       }
 
-      const payload = (await response.json()) as unknown;
-      summary = extractSummary(payload);
+      const crawledPayload = (await crawlResponse.json()) as unknown;
+      const crawled = extractCrawledContent(crawledPayload);
+      summary = crawled.body || extractSummary(crawledPayload);
       summarySource = 'network';
 
-      await setCachedVerifyEntry(currentUrl, {
+      const verifyContentResponse = await fetch(VERIFY_CONTENT_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title: crawled.title,
+          body: crawled.body,
+          comments: crawled.comments,
+          language: selectedLanguage,
+        }),
+      });
+
+      if (!verifyContentResponse.ok) {
+        throw new Error(`Verify content request failed: ${verifyContentResponse.status}`);
+      }
+
+      const verifyPayload = (await verifyContentResponse.json()) as unknown;
+      const verifyDetails = extractVerifyDetails(verifyPayload);
+      verdict = verifyDetails.verdict;
+      verdictReasoning = verifyDetails.verdictReasoning;
+      supportingSourceCount = verifyDetails.supportingSourceCount;
+      contradictingSourceCount = verifyDetails.contradictingSourceCount;
+      sampleSupportingSources = verifyDetails.sampleSupportingSources;
+      sampleContradictingSources = verifyDetails.sampleContradictingSources;
+      reliableSource = verifyDetails.reliableSource;
+      agreements = verifyDetails.agreements;
+      differences = verifyDetails.differences;
+      comparisonAnalysis = verifyDetails.analysis;
+      missingContext = verifyDetails.missingContext;
+      potentialRisks = verifyDetails.potentialRisks;
+
+      await setCachedVerifyEntry(cacheKey, {
         Summary: summary,
+        Verdict: verdict,
+        VerdictReasoning: verdictReasoning,
+        SupportingSourceCount: supportingSourceCount,
+        ContradictingSourceCount: contradictingSourceCount,
+        SampleSupportingSources: sampleSupportingSources,
+        SampleContradictingSources: sampleContradictingSources,
+        ReliableSourceName: reliableSource.Name,
+        ReliableSourceUrl: reliableSource.URL,
+        Agreements: agreements,
+        Differences: differences,
+        Analysis: comparisonAnalysis,
+        MissingContext: missingContext,
+        PotentialRisks: potentialRisks,
         fetchedAt: new Date().toISOString(),
       });
     } catch (err) {
       summary = '';
+      verdict = '';
+      verdictReasoning = '';
+      supportingSourceCount = 0;
+      contradictingSourceCount = 0;
+      sampleSupportingSources = [];
+      sampleContradictingSources = [];
+      reliableSource = { Name: '', URL: '' };
+      agreements = [];
+      differences = [];
+      comparisonAnalysis = '';
+      missingContext = [];
+      potentialRisks = [];
       summarySource = '';
       error = err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다.';
     } finally {
@@ -120,61 +472,234 @@
   });
 </script>
 
-<main class="popup-shell">
+<main class={`popup-shell app-tone-${getVerificationTone(verdict)}`}>
   <section class="hero-card">
-    <div class="url-strip">
-      <p class="section-label">Website Link</p>
-      {#if currentUrl}
-        <a class="url-link" href={currentUrl} target="_blank" rel="noreferrer">
-          {currentUrl}
-        </a>
-      {:else}
-        <span class="url-link muted">Loading current tab...</span>
-      {/if}
-    </div>
+    <div class={`status-strip tone-${getVerificationTone(verdict)}`}>
+      <div class="status-header">
+        <div class="status-copy">
+          <p class="section-label">Verification Status</p>
+          <p class="status-text">{getVerificationStatus(verdict)}</p>
+        </div>
 
-    <div class="lang-chip" aria-label="Language placeholder">
-      <div class="lang-icon">Lang</div>
+        <label class="language-card">
+          <span class="language-label">Language</span>
+          <select class="language-select" bind:value={selectedLanguage} disabled={isLoading}>
+            {#each languageOptions as language}
+              <option value={language}>{language}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
     </div>
   </section>
 
   <section class="panel">
     <p class="section-label">Summary</p>
-    {#if error}
+    {#if error && !summary}
       <p class="body-copy error-copy">{error}</p>
-    {:else if isLoading}
-      <p class="body-copy muted">Fetching summary...</p>
-    {:else if !hasFetched}
-      <p class="body-copy muted">Press Start Fetching to request the summary.</p>
-    {:else}
-      <p class="body-copy">{summary || summaryFallback}</p>
+    {:else if summary}
+      <p class="body-copy">
+        {#each renderableTextFields(summary || summaryFallback) as segment}
+          {#if segment.type === 'link'}
+            <a class="inline-link" href={segment.href} target="_blank" rel="noreferrer">
+              {segment.text}
+            </a>
+          {:else}
+            {segment.text}
+          {/if}
+        {/each}
+      </p>
+      {#if isLoading}
+        <p class="source-note muted">Summary loaded. Verifying content consistency...</p>
+      {/if}
+      {#if error}
+        <p class="source-note error-copy">{error}</p>
+      {/if}
       {#if summarySource}
         <p class="source-note muted">
           Loaded from {summarySource === 'cache' ? 'local cache' : 'network'}.
         </p>
       {/if}
+    {:else if isLoading}
+      <p class="body-copy muted">Fetching summary...</p>
+    {:else if !hasFetched}
+      <p class="body-copy muted">Press Start Fetching to request the summary.</p>
+    {:else}
+      <p class="body-copy">{summaryFallback}</p>
     {/if}
   </section>
 
   <section class="panel">
     <p class="section-label">Credibility Statistics</p>
-    <p class="body-copy muted">
-      Placeholder for alignment score, verified-source count, and contradictory-source count.
+    <p class="body-copy">
+      {#each renderableTextFields(verdictReasoning || 'Credibility reasoning will appear after verification.') as segment}
+        {#if segment.type === 'link'}
+          <a class="inline-link" href={segment.href} target="_blank" rel="noreferrer">
+            {segment.text}
+          </a>
+        {:else}
+          {segment.text}
+        {/if}
+      {/each}
     </p>
-
-    <div class="placeholder-box">
-      <p>3 Verified Sources Found</p>
-      <p>e.g. CNA</p>
-      <p class="spacer">1 Contradicting Source Found</p>
-      <p>e.g. The Straits Times</p>
+    <div class="stats-grid">
+      <div class="stat-box">
+        <span class="stat-number">{supportingSourceCount}</span>
+        <span class="stat-label">Supporting Sources</span>
+      </div>
+      <div class="stat-box">
+        <span class="stat-number">{contradictingSourceCount}</span>
+        <span class="stat-label">Contradicting Sources</span>
+      </div>
+    </div>
+    <div class="detail-stack">
+      <div class="source-card">
+        <p class="mini-label">Supporting</p>
+        {#if sampleSupportingSources.length}
+          {#each sampleSupportingSources as source}
+            <a class="source-link" href={source.URL} target="_blank" rel="noreferrer">{source.Name}</a>
+            <p class="source-note-text">{source.Note}</p>
+            <a class="inline-link" href={source.URL} target="_blank" rel="noreferrer">
+              Read {source.Name}
+            </a>
+          {/each}
+        {:else}
+          <p class="body-copy muted">No supporting samples provided.</p>
+        {/if}
+      </div>
+      <div class="source-card">
+        <p class="mini-label">Contradicting</p>
+        {#if sampleContradictingSources.length}
+          {#each sampleContradictingSources as source}
+            <a class="source-link" href={source.URL} target="_blank" rel="noreferrer">{source.Name}</a>
+            <p class="source-note-text">{source.Note}</p>
+            <a class="inline-link" href={source.URL} target="_blank" rel="noreferrer">
+              Read {source.Name}
+            </a>
+          {/each}
+        {:else}
+          <p class="body-copy muted">No contradicting samples provided.</p>
+        {/if}
+      </div>
     </div>
   </section>
 
   <section class="panel">
     <p class="section-label">Website Content Comparison</p>
-    <p class="body-copy muted">
-      Placeholder for side-by-side comparison with a reliable source on the same topic.
+    {#if reliableSource.Name}
+      <a class="source-link" href={reliableSource.URL} target="_blank" rel="noreferrer">
+        Benchmark: {reliableSource.Name}
+      </a>
+    {:else}
+      <p class="body-copy muted">Reliable comparison source will appear here.</p>
+    {/if}
+    <p class="body-copy comparison-copy">
+      {#each renderableTextFields(comparisonAnalysis || 'Comparison analysis will appear after verification.') as segment}
+        {#if segment.type === 'link'}
+          <a class="inline-link" href={segment.href} target="_blank" rel="noreferrer">
+            {segment.text}
+          </a>
+        {:else}
+          {segment.text}
+        {/if}
+      {/each}
     </p>
+    <div class="detail-stack">
+      <div class="comparison-column">
+        <p class="mini-label">Agreements</p>
+        {#if agreements.length}
+          <ul class="list">
+            {#each agreements as item}
+              <li>
+                {#each parseRichTextSegments(item) as segment}
+                  {#if segment.type === 'link'}
+                    <a class="inline-link" href={segment.href} target="_blank" rel="noreferrer">
+                      {segment.text}
+                    </a>
+                  {:else}
+                    {segment.text}
+                  {/if}
+                {/each}
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="body-copy muted">No key agreements listed.</p>
+        {/if}
+      </div>
+      <div class="comparison-column">
+        <p class="mini-label">Differences</p>
+        {#if differences.length}
+          <ul class="list">
+            {#each differences as item}
+              <li>
+                {#each parseRichTextSegments(item) as segment}
+                  {#if segment.type === 'link'}
+                    <a class="inline-link" href={segment.href} target="_blank" rel="noreferrer">
+                      {segment.text}
+                    </a>
+                  {:else}
+                    {segment.text}
+                  {/if}
+                {/each}
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="body-copy muted">No key differences listed.</p>
+        {/if}
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <p class="section-label">Contextual Flags</p>
+    <div class="detail-stack">
+      <div class="comparison-column">
+        <p class="mini-label">Missing Context</p>
+        {#if missingContext.length}
+          <ul class="list">
+            {#each missingContext as item}
+              <li>
+                {#each renderableTextFields(item) as segment}
+                  {#if segment.type === 'link'}
+                    <a class="inline-link" href={segment.href} target="_blank" rel="noreferrer">
+                      {segment.text}
+                    </a>
+                  {:else}
+                    {segment.text}
+                  {/if}
+                {/each}
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="body-copy muted">No missing-context flags reported.</p>
+        {/if}
+      </div>
+      <div class="comparison-column">
+        <p class="mini-label">Potential Risks</p>
+        {#if potentialRisks.length}
+          <ul class="list">
+            {#each potentialRisks as item}
+              <li>
+                {#each renderableTextFields(item) as segment}
+                  {#if segment.type === 'link'}
+                    <a class="inline-link" href={segment.href} target="_blank" rel="noreferrer">
+                      {segment.text}
+                    </a>
+                  {:else}
+                    {segment.text}
+                  {/if}
+                {/each}
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="body-copy muted">No risk flags reported.</p>
+        {/if}
+      </div>
+    </div>
   </section>
 
   <div class="footer-row">
@@ -190,47 +715,130 @@
     width: 420px;
     min-height: 640px;
     padding: 24px 22px 18px;
-    background: rgba(212, 208, 202, 0.86);
+    background: #ffffff;
+    transition:
+      background-color 2s ease,
+      box-shadow 2s ease;
+  }
+
+  .popup-shell.app-tone-verified {
+    background: #d8ead8;
+    box-shadow: inset 0 0 80px rgba(76, 175, 80, 0.12);
+  }
+
+  .popup-shell.app-tone-unverified {
+    background: #ead8c4;
+    box-shadow: inset 0 0 80px rgba(245, 158, 11, 0.14);
+  }
+
+  .popup-shell.app-tone-misleading {
+    background: #ead1cf;
+    box-shadow: inset 0 0 80px rgba(239, 68, 68, 0.14);
   }
 
   .hero-card {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 72px;
-    gap: 14px;
-    align-items: start;
+    display: block;
     margin-bottom: 22px;
   }
 
-  .url-strip,
+  .status-strip,
   .panel {
     background: #f7f5f2;
     border: 1px solid rgba(79, 72, 61, 0.12);
     box-shadow: 0 2px 0 rgba(255, 255, 255, 0.35) inset;
   }
 
-  .url-strip {
+  .status-strip {
+    position: relative;
+    z-index: 1;
     padding: 14px 18px 16px;
-  }
-
-  .lang-chip {
-    display: grid;
-    place-items: center;
+    border-width: 2px;
+    border-style: solid;
+    border-color: rgba(79, 72, 61, 0.12);
     background: #f7f5f2;
-    border: 1px solid rgba(79, 72, 61, 0.12);
-    min-height: 84px;
+    transition:
+      background-color 2s ease,
+      border-color 2s ease,
+      transform 2s ease,
+      box-shadow 2s ease;
   }
 
-  .lang-icon {
-    display: grid;
-    place-items: center;
-    width: 44px;
-    height: 44px;
-    border: 2px solid #111;
-    border-radius: 999px;
+  .status-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .status-copy {
+    min-width: 0;
+  }
+
+  .status-strip.tone-verified {
+    border-color: rgba(47, 125, 50, 0.7);
+    background: #e7f6e8;
+    box-shadow:
+      0 2px 0 rgba(255, 255, 255, 0.35) inset,
+      0 0 24px rgba(76, 175, 80, 0.38),
+      0 0 48px rgba(76, 175, 80, 0.18);
+    transform: translateY(-1px);
+  }
+
+  .status-strip.tone-unverified {
+    border-color: rgba(191, 113, 20, 0.7);
+    background: #fff1dc;
+    box-shadow:
+      0 2px 0 rgba(255, 255, 255, 0.35) inset,
+      0 0 24px rgba(245, 158, 11, 0.36),
+      0 0 48px rgba(245, 158, 11, 0.18);
+    transform: translateY(-1px);
+  }
+
+  .status-strip.tone-misleading {
+    border-color: rgba(172, 43, 43, 0.72);
+    background: #fde8e7;
+    box-shadow:
+      0 2px 0 rgba(255, 255, 255, 0.35) inset,
+      0 0 24px rgba(239, 68, 68, 0.38),
+      0 0 48px rgba(239, 68, 68, 0.18);
+    transform: translateY(-1px);
+  }
+
+  .language-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 124px;
+    padding: 10px 12px 12px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.62);
+    border: 1px solid rgba(79, 72, 61, 0.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  }
+
+  .language-label {
+    margin: 0;
     font-size: 11px;
     font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
+    color: #61584b;
+  }
+
+  .language-select {
+    width: 100%;
+    border: 1px solid rgba(79, 72, 61, 0.18);
+    background: #ffffff;
+    color: #1b1b1b;
+    padding: 10px 12px;
+    font-size: 13px;
+    border-radius: 999px;
+    box-shadow: 0 1px 2px rgba(33, 24, 13, 0.06);
+  }
+
+  .language-select:focus {
+    outline: none;
+    border-color: rgba(79, 72, 61, 0.35);
   }
 
   .panel {
@@ -247,12 +855,12 @@
     color: #61584b;
   }
 
-  .url-link {
-    display: block;
-    overflow-wrap: anywhere;
-    font-size: 15px;
-    line-height: 1.5;
-    text-decoration: none;
+  .status-text {
+    margin: 0;
+    font-size: 28px;
+    line-height: 1.1;
+    font-weight: 700;
+    letter-spacing: -0.02em;
   }
 
   .body-copy {
@@ -275,21 +883,94 @@
     letter-spacing: 0.03em;
   }
 
-  .placeholder-box {
-    margin-top: 16px;
-    padding: 18px;
-    background: #d4d1cc;
-    color: #27231d;
+  .stats-grid,
+  .source-columns,
+  .comparison-grid,
+  .detail-stack {
+    display: grid;
+    gap: 12px;
   }
 
-  .placeholder-box p {
-    margin: 0;
+  .stats-grid,
+  .source-columns,
+  .comparison-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .detail-stack {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-grid {
+    margin-top: 16px;
+  }
+
+  .stat-box,
+  .source-card,
+  .comparison-column {
+    background: rgba(255, 255, 255, 0.55);
+    border: 1px solid rgba(79, 72, 61, 0.12);
+    border-radius: 12px;
+    padding: 14px;
+  }
+
+  .stat-number {
+    display: block;
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .stat-label,
+  .mini-label {
+    display: block;
+    margin-top: 6px;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #61584b;
+  }
+
+  .source-columns,
+  .comparison-grid,
+  .detail-stack {
+    margin-top: 16px;
+  }
+
+  .source-link {
+    display: inline-block;
+    margin-top: 8px;
+    color: #1b1b1b;
+    font-weight: 600;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+
+  .inline-link {
+    color: #2457a6;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    overflow-wrap: anywhere;
+  }
+
+  .source-note-text,
+  .comparison-copy {
+    margin: 8px 0 0;
     font-size: 14px;
     line-height: 1.55;
+    color: #3d372e;
   }
 
-  .placeholder-box .spacer {
-    margin-top: 20px;
+  .list {
+    margin: 8px 0 0;
+    padding-left: 18px;
+    font-size: 14px;
+    line-height: 1.55;
+    color: #3d372e;
+  }
+
+  .list li + li {
+    margin-top: 6px;
   }
 
   .footer-row {

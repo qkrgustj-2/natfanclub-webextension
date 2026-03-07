@@ -6,6 +6,7 @@
   const VERIFY_CONTENT_ENDPOINT =
     'https://natfanclub-backend-809989871890.asia-southeast1.run.app/verify_content';
   const CACHE_STORAGE_KEY = 'verify-cache-v2';
+  const PREFERRED_LANGUAGE_STORAGE_KEY = 'preferred-language';
 
   type CachedVerifyEntry = {
     Summary: string;
@@ -313,6 +314,9 @@
 
   const getCacheKey = (url: string, language: string) => `${url}::${language}`;
 
+  const isLanguageOption = (value: string): value is (typeof languageOptions)[number] =>
+    languageOptions.includes(value as (typeof languageOptions)[number]);
+
   const getCachedVerifyEntry = async (cacheKey: string) => {
     const stored = (await browser.storage.local.get(CACHE_STORAGE_KEY)) as {
       [CACHE_STORAGE_KEY]?: Record<string, CachedVerifyEntry>;
@@ -335,6 +339,23 @@
       [CACHE_STORAGE_KEY]: nextCache,
     });
   };
+
+  async function loadPreferredLanguage() {
+    const stored = (await browser.storage.local.get(PREFERRED_LANGUAGE_STORAGE_KEY)) as {
+      [PREFERRED_LANGUAGE_STORAGE_KEY]?: string;
+    };
+
+    const storedLanguage = stored[PREFERRED_LANGUAGE_STORAGE_KEY];
+    if (storedLanguage && isLanguageOption(storedLanguage)) {
+      selectedLanguage = storedLanguage;
+    }
+  }
+
+  async function savePreferredLanguage() {
+    await browser.storage.local.set({
+      [PREFERRED_LANGUAGE_STORAGE_KEY]: selectedLanguage,
+    });
+  }
 
   async function loadCurrentTabUrl() {
     try {
@@ -467,8 +488,20 @@
     }
   }
 
+  async function handleLanguageChange() {
+    await savePreferredLanguage();
+
+    if (!currentUrl) return;
+
+    void loadSummary();
+  }
+
   onMount(() => {
-    void loadCurrentTabUrl();
+    void (async () => {
+      await loadPreferredLanguage();
+      await loadCurrentTabUrl();
+      await loadSummary();
+    })();
   });
 </script>
 
@@ -483,7 +516,12 @@
 
         <label class="language-card">
           <span class="language-label">Language</span>
-          <select class="language-select" bind:value={selectedLanguage} disabled={isLoading}>
+          <select
+            class="language-select"
+            bind:value={selectedLanguage}
+            disabled={isLoading}
+            on:change={handleLanguageChange}
+          >
             {#each languageOptions as language}
               <option value={language}>{language}</option>
             {/each}
@@ -523,7 +561,7 @@
     {:else if isLoading}
       <p class="body-copy muted">Fetching summary...</p>
     {:else if !hasFetched}
-      <p class="body-copy muted">Press Start Fetching to request the summary.</p>
+      <p class="body-copy muted">Preparing summary...</p>
     {:else}
       <p class="body-copy">{summaryFallback}</p>
     {/if}
@@ -702,11 +740,6 @@
     </div>
   </section>
 
-  <div class="footer-row">
-    <button class="refresh-button" on:click={loadSummary} disabled={isLoading || !currentUrl}>
-      {isLoading ? 'Loading...' : 'Start Fetching'}
-    </button>
-  </div>
 </main>
 
 <style>
@@ -973,22 +1006,4 @@
     margin-top: 6px;
   }
 
-  .footer-row {
-    display: flex;
-    justify-content: flex-end;
-  }
-
-  .refresh-button {
-    border: 1px solid #5f574d;
-    background: #f7f5f2;
-    color: #1b1b1b;
-    padding: 9px 14px;
-    border-radius: 999px;
-    cursor: pointer;
-  }
-
-  .refresh-button:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
 </style>

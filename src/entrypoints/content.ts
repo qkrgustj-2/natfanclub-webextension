@@ -36,6 +36,7 @@ export default defineContentScript({
       badge.style.display = 'inline-flex';
       badge.style.alignItems = 'center';
       badge.style.gap = '6px';
+      badge.style.marginLeft = '6px';
       badge.style.padding = '1px 4px';
       badge.style.background = '#fff';
 
@@ -50,6 +51,7 @@ export default defineContentScript({
 
     const showImageBadge = (badge: HTMLElement, badgeIcon: HTMLImageElement, imageUrl: string) => {
       badge.style.display = 'inline-block';
+      badge.style.marginLeft = '6px';
       badge.style.padding = '0';
       badge.style.background = 'transparent';
 
@@ -85,6 +87,7 @@ export default defineContentScript({
       badge.style.display = 'inline-flex';
       badge.style.alignItems = 'center';
       badge.style.gap = '6px';
+      badge.style.marginLeft = '6px';
       badge.style.marginRight = '6px';
       badge.style.padding = '1px 4px';
       badge.style.border = 'none';

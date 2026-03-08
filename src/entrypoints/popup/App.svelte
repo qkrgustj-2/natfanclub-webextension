@@ -584,7 +584,7 @@
           target="_blank"
           rel="noopener noreferrer"
         >
-          Go to FactGuard website
+          Report to FactGuard website
         </a>
       </div>
       <button

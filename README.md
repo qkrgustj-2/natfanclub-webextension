@@ -23,7 +23,9 @@ Main responsibilities:
 - Inject verification badges into Google Search results
 - Show a popup with credibility analysis for the current page
 - Cache results locally by URL and selected language
-- Support both Chrome and Firefox builds
+- Integrate with the forum-based webpage login flow
+- Provide direct links for reporting suspicious content to the forum-based webpage
+- Support Chrome builds
 
 Current extension surfaces:
 
@@ -75,6 +77,11 @@ This repo complements the extension/backend setup by providing a standalone web 
 - Includes localized source discovery, including local credible sources where relevant
 - Uses `(full URL + language)` as the local storage cache key to reduce repeated token usage
 - Transparently exposes supporting and contradicting source findings
+
+#### 3. Forum Integration
+
+- Supports login through the connected forum-based webpage system
+- Provides direct navigation links so users can quickly report suspicious pages through the website workflow
 
 ## Extension Flow
 
@@ -140,14 +147,12 @@ Run development mode:
 
 ```bash
 pnpm dev
-pnpm dev:firefox
 ```
 
 Build for browser loading:
 
 ```bash
 pnpm build
-pnpm build:firefox
 ```
 
 Then load the generated extension manually in the target browser.
@@ -156,22 +161,20 @@ Create packaged zip builds:
 
 ```bash
 pnpm zip
-pnpm zip:firefox
 ```
 
 Use these packaged outputs when you want a distributable build artifact instead of a dev or unpacked build folder.
 
 Prebuilt zip artifacts are also included in this repository:
 
-- `build_for_chrome.zip`
-- `build_for_firefox.zip`
+- `build_chrome_latest.zip`: latest packaged Chrome build. This is the current version and is supported on Chrome only.
+- `old_version_chrome.zip`: older Chrome build without the login flow.
+- `old_version_firefox.zip`: older Firefox build without the login flow.
 
 Typical output folders:
 
 - Chrome dev: `.output/chrome-mv3-dev/`
 - Chrome build: `.output/chrome-mv3/`
-- Firefox dev: `.output/firefox-mv2-dev/`
-- Firefox build: `.output/firefox-mv2/`
 
 ### Backend
 
@@ -246,13 +249,13 @@ This repository is the browser-extension frontend of the broader NatFanClub syst
 ### Web Extension: Popup Overview
 
 <p align="center">
-  <img src="./imgs/Screenshot-EN.png" alt="Extension popup in English" width="900" />
+  <img src="./imgs/Screenshot-EN2.png" alt="Extension popup in English" width="900" />
 </p>
 
 <p align="center"><sub>Extension popup review flow in English.</sub></p>
 
 <p align="center">
-  <img src="./imgs/Screenshot-CN.png" alt="Extension popup in Chinese" width="900" />
+  <img src="./imgs/Screenshot-CN3.png" alt="Extension popup in Chinese" width="900" />
 </p>
 
 <p align="center"><sub>Extension popup review flow in Chinese to demonstrate multilingual support.</sub></p>

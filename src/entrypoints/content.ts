@@ -16,6 +16,8 @@ export default defineContentScript({
       location.hostname.includes('google.') && location.pathname.startsWith('/search');
     if (!isGoogleSearchPage) return;
 
+    const VERIFY_AFTER_MS = 10_000;
+
     const iconUrl = browser.runtime.getURL('/icon/16.png');
     const verificationImageUrls = {
       'Likely Accurate:true': browser.runtime.getURL('/verification_icon/Accurate-SG.svg'),
@@ -27,6 +29,12 @@ export default defineContentScript({
     } as const;
     const verifyStateByUrl = new Map<string, VerifyState>();
     let injectTimeout: number | null = null;
+    let readyToVerify = false;
+
+    window.setTimeout(() => {
+      readyToVerify = true;
+      scheduleInject();
+    }, VERIFY_AFTER_MS);
 
     const resetBadgeToDefaultLayout = (
       badge: HTMLElement,
@@ -238,7 +246,9 @@ export default defineContentScript({
 
         if (!verifyState) {
           applyPendingBadge(badge, badgeIcon, verifyLine);
-          requestVerification(fullUrl);
+          if (readyToVerify) {
+            requestVerification(fullUrl);
+          }
           continue;
         }
 

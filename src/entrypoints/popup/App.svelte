@@ -1,5 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { getStoredAuth, clearStoredAuth } from '../../lib/auth-storage';
+  import type { StoredAuth } from '../../lib/auth-storage';
+  import { isChatDomain, getChatPlatformFromHostname } from '../../lib/chat-scrapers/types';
+  import { HACKOMANIA_API_BASE } from '../../lib/config';
+  import Login from './Login.svelte';
+  import ChatVerifyPanel from './ChatVerifyPanel.svelte';
 
   const CRAWL_ENDPOINT =
     'https://natfanclub-backend-809989871890.asia-southeast1.run.app/crawl';
@@ -57,6 +63,30 @@
   let hasFetched = false;
   let summarySource: 'network' | 'cache' | '' = '';
   let selectedLanguage: (typeof languageOptions)[number] = 'English';
+
+  let auth: StoredAuth | null = null;
+  let authCheckDone = false;
+  let tabUrlLoaded = false;
+
+  let currentTabId: number | undefined = undefined;
+
+  function getIsChatTab(): boolean {
+    if (!currentUrl) return false;
+    try {
+      return isChatDomain(new URL(currentUrl).hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  function getChatPlatform(): string {
+    if (!currentUrl) return '';
+    try {
+      return getChatPlatformFromHostname(new URL(currentUrl).hostname) ?? '';
+    } catch {
+      return '';
+    }
+  }
 
   const summaryFallback =
     'Website brief description and summary will appear here once verification finishes.';
@@ -359,19 +389,32 @@
 
   async function loadCurrentTabUrl() {
     try {
-      const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-      currentUrl = tab?.url ?? '';
+      const fromBackground = await browser.runtime.sendMessage({
+        type: 'get-active-tab-info',
+      }) as { url?: string; tabId?: number } | undefined;
+      if (fromBackground?.url != null && fromBackground.url !== '') {
+        currentUrl = fromBackground.url;
+        currentTabId = fromBackground.tabId;
+      } else {
+        const [tab] = await browser.tabs.query({ active: true, lastFocusedWindow: true });
+        currentUrl = tab?.url ?? '';
+        currentTabId = tab?.id;
+      }
       if (!currentUrl) {
         throw new Error('현재 탭 URL을 읽지 못했습니다.');
       }
     } catch (err) {
       currentUrl = '';
+      currentTabId = undefined;
       error = err instanceof Error ? err.message : '알 수 없는 오류가 발생했습니다.';
+    } finally {
+      tabUrlLoaded = true;
     }
   }
 
   async function loadSummary() {
     if (!currentUrl) return;
+    if (getIsChatTab()) return;
 
     const cacheKey = getCacheKey(currentUrl, selectedLanguage);
     isLoading = true;
@@ -496,8 +539,26 @@
     void loadSummary();
   }
 
+  async function handleLoginSuccess() {
+    const stored = await getStoredAuth();
+    if (stored) auth = stored;
+    if (!auth) return;
+    await loadPreferredLanguage();
+    await loadCurrentTabUrl();
+    await loadSummary();
+  }
+
+  async function handleLogout() {
+    await clearStoredAuth();
+    auth = null;
+  }
+
   onMount(() => {
     void (async () => {
+      const stored = await getStoredAuth();
+      auth = stored;
+      authCheckDone = true;
+      if (!auth) return;
       await loadPreferredLanguage();
       await loadCurrentTabUrl();
       await loadSummary();
@@ -505,31 +566,97 @@
   });
 </script>
 
-<main class={`popup-shell app-tone-${getVerificationTone(verdict)}`}>
-  <section class="hero-card">
-    <div class={`status-strip tone-${getVerificationTone(verdict)}`}>
-      <div class="status-header">
-        <div class="status-copy">
-          <p class="section-label">Verification Status</p>
-          <p class="status-text">{getVerificationStatus(verdict)}</p>
-        </div>
-
-        <label class="language-card">
-          <span class="language-label">Language</span>
-          <select
-            class="language-select"
-            bind:value={selectedLanguage}
-            disabled={isLoading}
-            on:change={handleLanguageChange}
-          >
-            {#each languageOptions as language}
-              <option value={language}>{language}</option>
-            {/each}
-          </select>
-        </label>
+{#if !authCheckDone}
+  <div class="auth-loading">Loading…</div>
+{:else if !auth}
+  <Login onLoginSuccess={handleLoginSuccess} />
+{:else if !tabUrlLoaded}
+  <div class="auth-loading">Detecting tab…</div>
+{:else}
+<main class={`popup-shell ${getIsChatTab() ? 'app-tone-neutral' : `app-tone-${getVerificationTone(verdict)}`}`}>
+  <div class="popup-main-inner">
+    <header class="popup-header">
+      <div class="popup-header-left">
+        <span class="user-email">{auth.user.email}</span>
+        <a
+          class="popup-website-link"
+          href={HACKOMANIA_API_BASE}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Go to FactGuard website
+        </a>
       </div>
+      <button
+        type="button"
+        class="logout-button"
+        onclick={handleLogout}
+        title="Log out"
+      >
+        Log out
+      </button>
+    </header>
+
+    <nav class="popup-tabs" aria-label="Verification mode">
+      <span
+        class="popup-tab"
+        class:tab-active={getIsChatTab()}
+        class:tab-inactive={!getIsChatTab()}
+        aria-current={getIsChatTab() ? 'true' : undefined}
+      >
+        Chat verification
+      </span>
+      <span
+        class="popup-tab"
+        class:tab-active={!getIsChatTab()}
+        class:tab-inactive={getIsChatTab()}
+        aria-current={!getIsChatTab() ? 'true' : undefined}
+      >
+        Page verification
+      </span>
+    </nav>
+
+    {#if getIsChatTab()}
+    <div class="tab-panel tab-panel-chat" aria-hidden={!getIsChatTab()}>
+      <section class="chat-verify-hero">
+        <p class="chat-verify-hero-label">Chat verification</p>
+        <p class="chat-verify-hero-platform">You're on {getChatPlatform()}</p>
+        <ChatVerifyPanel
+          tabId={currentTabId}
+          platform={getChatPlatform()}
+          authToken={auth?.token ?? ''}
+          language={selectedLanguage}
+        />
+      </section>
     </div>
-  </section>
+    {:else}
+    <div class="tab-panel tab-panel-page" aria-hidden={getIsChatTab()}>
+      <section class="hero-card">
+        <div class={`status-strip tone-${getVerificationTone(verdict)}`}>
+          <div class="status-header">
+            <div class="status-row">
+              <div class="status-copy">
+                <p class="section-label">Verification Status</p>
+                <p class="status-text">{getVerificationStatus(verdict)}</p>
+              </div>
+            </div>
+
+            <label class="language-card">
+              <span class="language-label">Language</span>
+              <select
+                class="language-select"
+                bind:value={selectedLanguage}
+                disabled={isLoading}
+                onchange={handleLanguageChange}
+              >
+                {#each languageOptions as language}
+                  <option value={language}>{language}</option>
+                {/each}
+              </select>
+            </label>
+          </div>
+        </div>
+      </section>
 
   <section class="panel">
     <p class="section-label">Summary</p>
@@ -739,10 +866,51 @@
       </div>
     </div>
   </section>
-
+  </div>
+  {/if}
+  </div>
 </main>
+{/if}
 
 <style>
+  .auth-loading {
+    padding: 24px 22px;
+    font-size: 16px;
+    color: #61584b;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .user-email {
+    font-size: 12px;
+    color: #61584b;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .logout-button {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #6b7280;
+    background: transparent;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .logout-button:hover {
+    background: #f3f4f6;
+    color: #374151;
+  }
+
   .popup-shell {
     box-sizing: border-box;
     width: 420px;
@@ -754,9 +922,78 @@
       box-shadow 2s ease;
   }
 
+  .popup-main-inner {
+    width: 100%;
+  }
+
+  .popup-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+  }
+
+  .popup-header-left {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .popup-website-link {
+    font-size: 11px;
+    color: #4f46e5;
+    text-decoration: none;
+  }
+
+  .popup-website-link:hover {
+    text-decoration: underline;
+  }
+
+  .popup-tabs {
+    display: flex;
+    gap: 0;
+    margin-bottom: 16px;
+    border-bottom: 2px solid #e5e7eb;
+    padding-bottom: 0;
+  }
+
+  .popup-tab {
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #6b7280;
+    background: transparent;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    cursor: default;
+    transition: color 0.15s ease, background 0.15s ease;
+  }
+
+  .popup-tab.tab-active {
+    color: #374151;
+    border-bottom-color: #4f46e5;
+    cursor: default;
+  }
+
+  .popup-tab.tab-inactive {
+    opacity: 0.55;
+    filter: grayscale(0.4);
+    pointer-events: none;
+  }
+
+  .tab-panel {
+    transition: opacity 0.2s ease, filter 0.2s ease;
+  }
+
   .popup-shell.app-tone-verified {
     background: #d8ead8;
     box-shadow: inset 0 0 80px rgba(76, 175, 80, 0.12);
+  }
+
+  .popup-shell.app-tone-neutral {
+    background: #ffffff;
   }
 
   .popup-shell.app-tone-unverified {
@@ -772,6 +1009,39 @@
   .hero-card {
     display: block;
     margin-bottom: 22px;
+  }
+
+  .chat-verify-hero {
+    margin-bottom: 20px;
+    padding: 20px 18px;
+    background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
+    border: 2px solid #818cf8;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.15);
+  }
+
+  .chat-verify-hero-label {
+    margin: 0 0 4px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #4f46e5;
+  }
+
+  .chat-verify-hero-platform {
+    margin: 0 0 16px;
+    font-size: 15px;
+    font-weight: 600;
+    color: #3730a3;
+  }
+
+  .chat-verify-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
   }
 
   .status-strip,
@@ -801,6 +1071,13 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 16px;
+  }
+
+  .status-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
   }
 
   .status-copy {

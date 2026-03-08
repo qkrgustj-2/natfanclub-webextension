@@ -1,4 +1,4 @@
-# NatFanClub
+# FactGuard
 
 AI-assisted credibility review system built across three repositories:
 
@@ -210,7 +210,7 @@ pnpm dev
 
 ## Status
 
-This repository is the browser-extension frontend of the broader NatFanClub system. It is designed to work together with the FastAPI backend and the separate Next.js website repository listed above.
+This repository is the browser-extension frontend of the broader FactGuard system. It is designed to work together with the FastAPI backend and the separate Next.js website repository listed above.
 
 ## Screenshots
 

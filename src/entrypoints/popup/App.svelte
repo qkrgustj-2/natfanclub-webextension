@@ -3,7 +3,7 @@
   import { getStoredAuth, clearStoredAuth } from '../../lib/auth-storage';
   import type { StoredAuth } from '../../lib/auth-storage';
   import { isChatDomain, getChatPlatformFromHostname } from '../../lib/chat-scrapers/types';
-  import { HACKOMANIA_API_BASE } from '../../lib/config';
+  import { FACTGUARD_API_BASE } from '../../lib/config';
   import Login from './Login.svelte';
   import ChatVerifyPanel from './ChatVerifyPanel.svelte';
 
@@ -580,7 +580,7 @@
         <span class="user-email">{auth.user.email}</span>
         <a
           class="popup-website-link"
-          href={HACKOMANIA_API_BASE}
+          href={FACTGUARD_API_BASE}
           target="_blank"
           rel="noopener noreferrer"
         >

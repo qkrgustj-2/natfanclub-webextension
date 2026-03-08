@@ -2,11 +2,11 @@
   import { loginWithEmailAndPassword } from '../../lib/hackomania-api';
   import { setStoredAuth } from '../../lib/auth-storage';
   import type { StoredAuthUser } from '../../lib/auth-storage';
-  import { HACKOMANIA_API_BASE } from '../../lib/config';
+  import { FACTGUARD_API_BASE } from '../../lib/config';
 
   const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const MIN_PASSWORD_LENGTH = 1;
-  const REGISTER_URL = `${HACKOMANIA_API_BASE}/auth/register`;
+  const REGISTER_URL = `${FACTGUARD_API_BASE}/auth/register`;
 
   export let onLoginSuccess: (user: StoredAuthUser) => void = () => {};
 
